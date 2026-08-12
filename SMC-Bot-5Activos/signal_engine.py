@@ -51,6 +51,7 @@ def evaluar_symbol(symbol: str) -> Optional[Senal]:
 
     impulso = structure.identificar_ultimo_impulso(df_m5)
     if impulso is None:
+        logger.info("%s: sin impulso M5 lo bastante grande todavía (esperando)", symbol)
         return None  # no hay impulso reciente lo suficientemente grande
 
     precio_ahora = data_engine.precio_actual(symbol)
@@ -59,12 +60,14 @@ def evaluar_symbol(symbol: str) -> Optional[Senal]:
 
     retroceso = structure.evaluar_retroceso(impulso, precio_ahora)
     if not retroceso.valido:
-        logger.debug(
-            "%s: retroceso %.1f%% no válido (necesita %.0f%%-%.0f%%)",
+        logger.info(
+            "%s: sin condiciones aún — retroceso %.1f%% (necesita %.0f%%-%.0f%%)",
             symbol, retroceso.nivel_alcanzado * 100,
             config.FIBO_RETROCESO_MINIMO * 100, config.FIBO_RETROCESO_MAXIMO * 100,
         )
         return None
+
+    logger.info("%s: retroceso válido (%.1f%%) — buscando CHoCH en M1...", symbol, retroceso.nivel_alcanzado * 100)
 
     # Retroceso válido -> bajar a M1 a buscar las dos confirmaciones
     df_m1 = data_engine.obtener_velas(symbol, config.TF_CONFIRMACION, cantidad=300)
@@ -73,12 +76,14 @@ def evaluar_symbol(symbol: str) -> Optional[Senal]:
 
     choch = structure.buscar_choch(df_m1, impulso.direccion)
     if choch is None:
-        logger.debug("%s: retroceso válido pero sin CHoCH en M1 todavía", symbol)
+        logger.info("%s: retroceso válido pero sin CHoCH en M1 todavía", symbol)
         return None
+
+    logger.info("%s: CHoCH confirmado (%s) — buscando BOS...", symbol, choch.direccion)
 
     bos = structure.buscar_bos(df_m1, choch)
     if bos is None:
-        logger.debug("%s: CHoCH confirmado pero sin BOS en M1 todavía", symbol)
+        logger.info("%s: CHoCH confirmado pero sin BOS en M1 todavía", symbol)
         return None
 
     # Las dos confirmaciones están — calcular niveles de la operación
@@ -124,6 +129,7 @@ def evaluar_symbol(symbol: str) -> Optional[Senal]:
 
 def evaluar_todos_los_simbolos(simbolos_activos: list[str]) -> list[Senal]:
     """Corre evaluar_symbol() para cada símbolo disponible y devuelve las señales encontradas."""
+    logger.info("--- Nuevo ciclo: evaluando %d símbolos ---", len(simbolos_activos))
     senales = []
     for symbol in simbolos_activos:
         try:
