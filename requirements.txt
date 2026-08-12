@@ -1,5 +1,0 @@
-MetaTrader5>=5.0.45
-pandas>=2.2.0
-supabase>=2.7.0
-requests>=2.32.0
-python-dotenv>=1.0.1
