@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-ink-950 text-slate-200 font-body antialiased;
+  background-image:
+    radial-gradient(circle at 20% -10%, rgba(124,108,240,0.10), transparent 45%),
+    radial-gradient(circle at 90% 0%, rgba(62,207,142,0.06), transparent 40%);
+  background-attachment: fixed;
+}
+
+::selection {
+  background: rgba(124,108,240,0.35);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* foco visible por accesibilidad */
+:focus-visible {
+  outline: 2px solid #7c6cf0;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
