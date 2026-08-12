@@ -24,11 +24,11 @@ load_dotenv()  # carga variables desde el archivo .env en la misma carpeta
 # correr en real. Los que traen duda están comentados con nota.
 
 SYMBOLS = [
-    "US100Cash",   # Nasdaq
-    "US30Cash",    # Dow Jones
-    "XAUUSD",      # Oro — confirma si tu broker usa "GOLD" en vez de XAUUSD
-    "EURUSD",
-    "XAGUSD",      # Plata — confirma nombre exacto en tu broker (a veces "SILVER")
+    "US100Cash",   # Nasdaq — confirmado con tu broker
+    "US30Cash",    # Dow Jones — confirmado con tu broker
+    "GOLD",        # Oro — confirmado: tu broker usa "GOLD", no "XAUUSD"
+    "EURUSD",      # confirmado con tu broker
+    "XAGUSD",      # Plata — PENDIENTE de confirmar nombre exacto en tu broker
 ]
 
 # ============================================================
