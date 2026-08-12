@@ -168,29 +168,36 @@ def guardar_error(symbol: str, retcode: int, mensaje: str, contexto: dict) -> No
 # ============================================================
 
 def calcular_lote(symbol: str, precio_entrada: float, stop_loss: float) -> float:
+    """
+    Devuelve el lote fijo definido en config.FIXED_LOTS para este símbolo.
+    Si el símbolo aún no tiene lote definido, usa config.LOTE_DEFAULT_SEGURO
+    (0.01) como medida de seguridad, y lo deja loggeado para que se note.
+
+    precio_entrada / stop_loss se mantienen como parámetros por si en el
+    futuro se quiere volver a un cálculo por riesgo — no se usan mientras
+    el lotaje sea fijo.
+    """
     info = data_engine.info_simbolo(symbol)
-    cuenta = mt5.account_info()
-    if info is None or cuenta is None:
-        return 0.01  # fallback mínimo de seguridad
 
-    riesgo_dinero = cuenta.balance * (config.RISK_PERCENT_PER_TRADE / 100)
-    distancia_precio = abs(precio_entrada - stop_loss)
-    if distancia_precio <= 0:
-        return 0.01
+    if symbol in config.FIXED_LOTS:
+        lote = config.FIXED_LOTS[symbol]
+    else:
+        lote = config.LOTE_DEFAULT_SEGURO
+        logger.warning(
+            "%s no tiene lote fijo definido en FIXED_LOTS — usando %.2f por seguridad. "
+            "Agrégalo a config.py cuando definas el tamaño real.",
+            symbol, lote,
+        )
 
-    valor_tick = info.trade_tick_value
-    tick_size = info.trade_tick_size or info.point
-    valor_por_punto = valor_tick / tick_size if tick_size else 0
+    if info is None:
+        return lote  # no se puede validar contra límites del broker, se devuelve tal cual
 
-    if valor_por_punto <= 0:
-        return 0.01
-
-    lote_calculado = riesgo_dinero / (distancia_precio * valor_por_punto)
-    lote_calculado = max(info.volume_min, min(info.volume_max, lote_calculado))
-    # redondear al step de volumen del símbolo
+    # Respeta los límites mínimo/máximo y el step de volumen del símbolo,
+    # por si el lote fijo configurado no calza exacto con lo que permite el broker.
+    lote = max(info.volume_min, min(info.volume_max, lote))
     step = info.volume_step or 0.01
-    lote_calculado = round(lote_calculado / step) * step
-    return round(lote_calculado, 2)
+    lote = round(lote / step) * step
+    return round(lote, 2)
 
 
 # ============================================================
