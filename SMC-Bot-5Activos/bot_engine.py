@@ -286,6 +286,16 @@ def main() -> None:
     logger.info("Bot SMC 5-activos iniciado. Símbolos: %s", config.SYMBOLS)
     logger.info("Límite de pérdidas diarias (compartido): %d", config.MAX_LOSSES_PER_DAY_TOTAL)
 
+    cuenta = mt5.account_info()
+    balance_txt = f"${cuenta.balance:.2f}" if cuenta else "N/D"
+    enviar_telegram(
+        f"🟢 *Bot iniciado*\n"
+        f"Cuenta: {cuenta.login if cuenta else 'N/D'} — Balance: {balance_txt}\n"
+        f"Símbolos: {', '.join(config.SYMBOLS)}\n"
+        f"Límite pérdidas/día: {config.MAX_LOSSES_PER_DAY_TOTAL} (compartido)\n"
+        f"Estrategia: Impulso+Retroceso50+CHoCH-BOS-M1"
+    )
+
     try:
         while True:
             ciclo()
