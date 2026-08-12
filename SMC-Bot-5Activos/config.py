@@ -26,9 +26,9 @@ load_dotenv()  # carga variables desde el archivo .env en la misma carpeta
 SYMBOLS = [
     "US100Cash",   # Nasdaq — confirmado con tu broker
     "US30Cash",    # Dow Jones — confirmado con tu broker
-    "GOLD",        # Oro — confirmado: tu broker usa "GOLD", no "XAUUSD"
+    "GOLD",        # Oro — confirmado con tu broker
     "EURUSD",      # confirmado con tu broker
-    "XAGUSD",      # Plata — PENDIENTE de confirmar nombre exacto en tu broker
+    "Silver",      # Plata — confirmado con tu broker
 ]
 
 # ============================================================
@@ -49,7 +49,24 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # canal "Nasdaq & US30 Sig
 # GESTIÓN DE RIESGO
 # ============================================================
 MAX_LOSSES_PER_DAY_TOTAL = 3     # compartido entre los 5 símbolos, no por símbolo
-RISK_PERCENT_PER_TRADE = 0.5     # % del balance arriesgado por operación (ajustar)
+RISK_PERCENT_PER_TRADE = 6.0     # ya no se usa para calcular lote (ver FIXED_LOTS) — queda de referencia
+
+# ============================================================
+# LOTAJE FIJO POR SÍMBOLO
+# ============================================================
+# Lote fijo definido manualmente por símbolo (reemplaza el cálculo
+# por % de riesgo). Los símbolos que aún no tienen valor asignado
+# usan LOTE_DEFAULT_SEGURO hasta que se definan aquí explícitamente
+# — así no se dispara un lote grande por accidente en un símbolo
+# todavía no configurado.
+FIXED_LOTS = {
+    "GOLD": 0.10,
+    "US100Cash": 1.0,
+    # "US30Cash": ...,   # pendiente de definir
+    # "EURUSD": ...,     # pendiente de definir
+    # "Silver": ...,     # pendiente de definir
+}
+LOTE_DEFAULT_SEGURO = 0.01  # usado SOLO si el símbolo no está en FIXED_LOTS todavía
 ATR_PERIOD = 14
 ATR_SL_BUFFER_MULT = 0.25        # colchón extra sobre el extremo del CHoCH, en múltiplos de ATR
 
