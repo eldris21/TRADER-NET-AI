@@ -1,8 +1,12 @@
 """
-config.py — Configuración central del bot SMC multi-activo.
+config.py — Configuración central del bot Golden Zone multi-activo.
 
-Estrategia única: Impulso (M5) + Retroceso válido >=50% Fibonacci
-+ confirmación CHoCH -> BOS en M1 + entrada al 50% de la pierna del BOS.
+Estrategia única (port del indicador "Impulso + Golden Zone [IGZ] v4"):
+  - Swings confirmados por giro de REV_MULT_ATR x ATR en velas cerradas (M5).
+  - COMPRA: par HL -> nuevo HH => Golden Zone = 50%-61.8% del fibo HL->HH.
+  - VENTA : par LH -> nuevo LL => espejo.
+  - Entrada: ORDEN LÍMITE en el nivel 50%.
+  - Zona invalidada (y orden cancelada) si el precio cierra más allá del ancla.
 
 Aplica a los 5 activos definidos en SYMBOLS. Opera sin restricción de
 killzone (24/5, según horario de mercado de cada símbolo).
@@ -21,14 +25,14 @@ load_dotenv()  # carga variables desde el archivo .env en la misma carpeta
 # IMPORTANTE: ajusta estos nombres exactos al como los expone tu
 # broker (XMGlobal). Algunos brokers agregan sufijos como ".m",
 # ".pro", "cash", etc. Verifica en MT5 -> Market Watch antes de
-# correr en real. Los que traen duda están comentados con nota.
+# correr en real.
 
 SYMBOLS = [
     "US100Cash",   # Nasdaq — confirmado con tu broker
     "US30Cash",    # Dow Jones — confirmado con tu broker
     "GOLD",        # Oro — confirmado con tu broker
     "EURUSD",      # confirmado con tu broker
-    "Silver",      # Plata — confirmado con tu broker
+    "SILVER",      # Plata — el broker lo expone en MAYÚSCULAS (verificado 2026-08-13)
 ]
 
 # ============================================================
@@ -39,63 +43,62 @@ MAGIC_NUMBER = 20260801
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://cgvidgcgtuzgcuaszqsg.supabase.co")
 # OJO: para ESCRIBIR (INSERT/UPDATE) el bot necesita la service_role key,
 # NO la anon key que usa el dashboard (esa es solo lectura pública).
-# Cópiala desde Supabase -> Project Settings -> API -> service_role.
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # canal "Nasdaq & US30 Signals" / @ea500drbot
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # canal "Nasdaq & US30 Signals"
 
 # ============================================================
 # GESTIÓN DE RIESGO
 # ============================================================
 MAX_LOSSES_PER_DAY_TOTAL = 3     # compartido entre los 5 símbolos, no por símbolo
-RISK_PERCENT_PER_TRADE = 6.0     # ya no se usa para calcular lote (ver FIXED_LOTS) — queda de referencia
 
 # ============================================================
 # LOTAJE FIJO POR SÍMBOLO
 # ============================================================
-# Lote fijo definido manualmente por símbolo (reemplaza el cálculo
-# por % de riesgo). Los símbolos que aún no tienen valor asignado
-# usan LOTE_DEFAULT_SEGURO hasta que se definan aquí explícitamente
-# — así no se dispara un lote grande por accidente en un símbolo
-# todavía no configurado.
+# Lote fijo definido manualmente por símbolo. Los símbolos que aún no
+# tienen valor asignado usan LOTE_DEFAULT_SEGURO hasta que se definan
+# aquí explícitamente (los lotes finales se definirán al terminar la
+# configuración del bot).
 FIXED_LOTS = {
     "GOLD": 0.10,
     "US100Cash": 1.0,
     # "US30Cash": ...,   # pendiente de definir
     # "EURUSD": ...,     # pendiente de definir
-    # "Silver": ...,     # pendiente de definir
+    # "SILVER": ...,     # pendiente de definir
 }
 LOTE_DEFAULT_SEGURO = 0.01  # usado SOLO si el símbolo no está en FIXED_LOTS todavía
+
+# Breakeven + trailing (los ejecutará el futuro gestor de posiciones)
+BREAKEVEN_AT_PCT_TO_TP1 = 0.70   # mueve a breakeven al recorrer 70% de la distancia a TP1
+TRAILING_ATR_MULT = 1.2          # trailing stop = ATR * este múltiplo, tras el breakeven
+
+# ============================================================
+# PARÁMETROS DE ESTRATEGIA — GOLDEN ZONE (IGZ)
+# ============================================================
+TF_ESTRUCTURA = "M5"             # timeframe donde se calculan swings y zonas
+VELAS_ANALISIS = 600             # velas cerradas que se analizan por ciclo
+
 ATR_PERIOD = 14
-ATR_SL_BUFFER_MULT = 0.25        # colchón extra sobre el extremo del CHoCH, en múltiplos de ATR
+REV_MULT_ATR = 4.0               # "Umbral de giro (x ATR)" del indicador:
+                                 # un swing se confirma al cerrar en contra del
+                                 # extremo más de este múltiplo de ATR.
+                                 # Alto (3-6) = solo estructura mayor.
 
-# Breakeven + trailing (mismo patrón usado en TradingProEA para oro)
-BREAKEVEN_AT_PCT_TO_TP1 = 0.70   # mueve a breakeven cuando el precio recorre 70% de la distancia a TP1
-TRAILING_ATR_MULT = 1.2          # trailing stop = ATR * este múltiplo, activa después del breakeven
+FIBO_ZONA_INICIO = 0.50          # borde de la Golden Zone más cercano al extremo
+FIBO_ZONA_FIN = 0.618            # borde más cercano al ancla
+# La entrada es una ORDEN LÍMITE en el nivel FIBO_ZONA_INICIO (50%).
 
-# ============================================================
-# PARÁMETROS DE ESTRATEGIA (Impulso + Retroceso + CHoCH/BOS)
-# ============================================================
-TF_IMPULSO = "M5"                 # timeframe donde se mide el impulso y el fibo
-TF_CONFIRMACION = "M1"            # timeframe donde se busca CHoCH -> BOS
+ATR_SL_BUFFER_MULT = 0.25        # colchón extra del SL más allá del ancla, en múltiplos de ATR
 
-FIBO_RETROCESO_MINIMO = 0.50      # retroceso debe alcanzar AL MENOS 50% del impulso
-FIBO_RETROCESO_MAXIMO = 0.786     # más allá de esto se considera impulso invalidado (no es "retroceso", es reversión)
-FIBO_ENTRADA_EN_BOS = 0.50        # la entrada se ejecuta al 50% de la pierna del BOS en M1
+TP1_RR = 1.5                     # TP1 en múltiplos del riesgo (SL)
+TP2_RR = 2.5                     # TP2 en múltiplos del riesgo (SL) — informativo,
+                                 # la orden lleva TP1 hasta que exista gestor de posiciones
 
-PIVOT_LOOKBACK = 3                # velas a cada lado para confirmar un swing high/low (fractal simple)
-MIN_IMPULSO_ATR_MULT = 3.0        # el impulso en M5 debe medir al menos N * ATR(M5) para no operar ruido
-
-TP1_RR = 1.5                      # TP1 en múltiplos del riesgo (SL)
-TP2_RR = 2.5                      # TP2 en múltiplos del riesgo (SL)
-
-# Sin restricción de killzone para esta estrategia (a diferencia del bot de oro).
+# Sin restricción de killzone para esta estrategia.
 RESTRINGIR_A_KILLZONE = False
 
-# Pendiente: filtro de noticias de alto impacto (NFP, CPI, FOMC). No implementado
-# todavía en este bot — si operas EURUSD/XAUUSD/XAGUSD cerca de estos eventos,
-# hazlo manualmente hasta portar news_engine.py del bot de oro.
+# Pendiente: filtro de noticias de alto impacto (NFP, CPI, FOMC).
 NEWS_FILTER_ENABLED = False
 
 
@@ -105,3 +108,17 @@ class RuntimeState:
     losses_today: int = 0
     last_reset_date: str = ""  # 'YYYY-MM-DD', para saber cuándo resetear el contador
     signals_sent_ids: set = field(default_factory=set)  # evita reenviar la misma señal
+
+# ============================================================
+# COMPATIBILIDAD — parámetros de la estrategia anterior que aún
+# usan módulos viejos (structure.py / result_tracker.py).
+# Eliminar cuando esos módulos se adapten a la Golden Zone.
+# ============================================================
+PIVOT_LOOKBACK = 3
+TF_IMPULSO = "M5"
+TF_CONFIRMACION = "M1"
+FIBO_RETROCESO_MINIMO = 0.50
+FIBO_RETROCESO_MAXIMO = 0.786
+FIBO_ENTRADA_EN_BOS = 0.50
+MIN_IMPULSO_ATR_MULT = 3.0
+RISK_PERCENT_PER_TRADE = 6.0
