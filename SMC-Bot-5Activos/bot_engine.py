@@ -1,12 +1,15 @@
 """
 bot_engine.py — Loop principal del bot.
 
-- Corre la estrategia sobre los 5 símbolos en cada ciclo.
+- Corre la estrategia GOLDEN ZONE (IGZ, M5) sobre los 5 símbolos en cada ciclo.
 - Respeta el límite de 3 pérdidas TOTALES por día (compartido entre
   los 5 símbolos), consultando idx_operaciones en Supabase.
-- Sin restricción de killzone (config.RESTRINGIR_A_KILLZONE = False).
-- Al detectar una señal válida: la guarda en idx_senales, ejecuta la
-  orden en MT5, guarda el resultado en idx_operaciones, y notifica
+- Entrada por ORDEN LÍMITE en el 50% del fibo de la zona. Si al momento
+  de colocarla el precio ya alcanzó ese nivel, entra a mercado.
+- Cancela automáticamente las órdenes límite cuya zona fue invalidada
+  (cierre más allá del ancla) o reemplazada por un nuevo par estructural.
+- Al detectar una señal válida: la guarda en idx_senales, coloca la
+  orden en MT5, guarda el registro en idx_operaciones, y notifica
   por Telegram. Los errores de ejecución se registran en idx_bot_errors.
 """
 
@@ -44,11 +47,13 @@ def enviar_telegram(mensaje: str) -> None:
         return
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={
+        resp = requests.post(url, data={
             "chat_id": config.TELEGRAM_CHAT_ID,
             "text": mensaje,
             "parse_mode": "Markdown",
         }, timeout=10)
+        if resp.status_code != 200:
+            logger.error("Telegram respondió %s: %s", resp.status_code, resp.text)
     except Exception:
         logger.exception("Error enviando mensaje a Telegram")
 
@@ -133,7 +138,9 @@ def actualizar_estado_senal(senal_id: int, estado: str) -> None:
         logger.exception("Error actualizando estado de señal %s", senal_id)
 
 
-def guardar_operacion(senal_id: int, senal: signal_engine.Senal, ticket: int, lote: float) -> None:
+def guardar_operacion(senal_id: Optional[int], senal: signal_engine.Senal,
+                      ticket: int, lote: float, estado: str) -> None:
+    """estado: 'PENDIENTE' (orden límite colocada) o 'ABIERTA' (ejecutada a mercado)."""
     try:
         supabase.table("idx_operaciones").insert({
             "senal_id": senal_id,
@@ -144,7 +151,7 @@ def guardar_operacion(senal_id: int, senal: signal_engine.Senal, ticket: int, lo
             "precio_entrada": senal.precio_entrada,
             "stop_loss": senal.stop_loss,
             "take_profit": senal.take_profit,
-            "estado": "ABIERTA",
+            "estado": estado,
             "magic_number": config.MAGIC_NUMBER,
         }).execute()
     except Exception:
@@ -164,7 +171,7 @@ def guardar_error(symbol: str, retcode: int, mensaje: str, contexto: dict) -> No
 
 
 # ============================================================
-# CÁLCULO DE LOTE (por % de riesgo)
+# CÁLCULO DE LOTE
 # ============================================================
 
 def calcular_lote(symbol: str, precio_entrada: float, stop_loss: float) -> float:
@@ -172,10 +179,6 @@ def calcular_lote(symbol: str, precio_entrada: float, stop_loss: float) -> float
     Devuelve el lote fijo definido en config.FIXED_LOTS para este símbolo.
     Si el símbolo aún no tiene lote definido, usa config.LOTE_DEFAULT_SEGURO
     (0.01) como medida de seguridad, y lo deja loggeado para que se note.
-
-    precio_entrada / stop_loss se mantienen como parámetros por si en el
-    futuro se quiere volver a un cálculo por riesgo — no se usan mientras
-    el lotaje sea fijo.
     """
     info = data_engine.info_simbolo(symbol)
 
@@ -190,10 +193,8 @@ def calcular_lote(symbol: str, precio_entrada: float, stop_loss: float) -> float
         )
 
     if info is None:
-        return lote  # no se puede validar contra límites del broker, se devuelve tal cual
+        return lote
 
-    # Respeta los límites mínimo/máximo y el step de volumen del símbolo,
-    # por si el lote fijo configurado no calza exacto con lo que permite el broker.
     lote = max(info.volume_min, min(info.volume_max, lote))
     step = info.volume_step or 0.01
     lote = round(lote / step) * step
@@ -201,21 +202,48 @@ def calcular_lote(symbol: str, precio_entrada: float, stop_loss: float) -> float
 
 
 # ============================================================
-# EJECUCIÓN DE ÓRDENES
+# ÓRDENES — límite en la zona, mercado si el precio ya llegó
 # ============================================================
 
+def _pendiente_existente(senal: signal_engine.Senal) -> bool:
+    """True si ya hay una orden límite nuestra para este símbolo/dirección
+    en (aprox.) el mismo precio — evita duplicados tras reinicios."""
+    info = data_engine.info_simbolo(senal.symbol)
+    point = info.point if info else 0.0001
+    tipo_buscado = mt5.ORDER_TYPE_BUY_LIMIT if senal.direccion == "BUY" else mt5.ORDER_TYPE_SELL_LIMIT
+    for o in (mt5.orders_get(symbol=senal.symbol) or []):
+        if o.magic == config.MAGIC_NUMBER and o.type == tipo_buscado \
+                and abs(o.price_open - senal.precio_entrada) <= 10 * point:
+            return True
+    return False
+
+
 def ejecutar_orden(senal: signal_engine.Senal, lote: float):
-    tipo_orden = mt5.ORDER_TYPE_BUY if senal.direccion == "BUY" else mt5.ORDER_TYPE_SELL
-    precio = data_engine.precio_actual(senal.symbol)
-    if precio is None:
-        return None
+    """
+    Coloca una ORDEN LÍMITE en senal.precio_entrada (el 50% de la zona).
+    Si el precio actual ya alcanzó/superó ese nivel, entra a MERCADO
+    (una BUY_LIMIT por encima del precio sería rechazada por MT5).
+    Devuelve (result, fue_pendiente).
+    """
+    tick = mt5.symbol_info_tick(senal.symbol)
+    if tick is None:
+        return None, False
+
+    if senal.direccion == "BUY":
+        precio_mercado = tick.ask
+        ya_llego = precio_mercado <= senal.precio_entrada
+        tipo = mt5.ORDER_TYPE_BUY if ya_llego else mt5.ORDER_TYPE_BUY_LIMIT
+    else:
+        precio_mercado = tick.bid
+        ya_llego = precio_mercado >= senal.precio_entrada
+        tipo = mt5.ORDER_TYPE_SELL if ya_llego else mt5.ORDER_TYPE_SELL_LIMIT
 
     request = {
-        "action": mt5.TRADE_ACTION_DEAL,
+        "action": mt5.TRADE_ACTION_DEAL if ya_llego else mt5.TRADE_ACTION_PENDING,
         "symbol": senal.symbol,
         "volume": lote,
-        "type": tipo_orden,
-        "price": precio,
+        "type": tipo,
+        "price": precio_mercado if ya_llego else senal.precio_entrada,
         "sl": senal.stop_loss,
         "tp": senal.take_profit,
         "deviation": 20,
@@ -226,7 +254,49 @@ def ejecutar_orden(senal: signal_engine.Senal, lote: float):
     }
 
     result = mt5.order_send(request)
-    return result
+    return result, (not ya_llego)
+
+
+def cancelar_pendientes_invalidadas() -> None:
+    """
+    Recorre nuestras órdenes límite pendientes y elimina las que ya no
+    corresponden a la zona viva de su símbolo (zona invalidada por cierre
+    más allá del ancla, o reemplazada por un nuevo par estructural).
+    Espejo del comportamiento del indicador al borrar la zona del gráfico.
+    """
+    for o in (mt5.orders_get() or []):
+        if o.magic != config.MAGIC_NUMBER:
+            continue
+        if o.type == mt5.ORDER_TYPE_BUY_LIMIT:
+            dir_orden = "BUY"
+        elif o.type == mt5.ORDER_TYPE_SELL_LIMIT:
+            dir_orden = "SELL"
+        else:
+            continue
+
+        zona = signal_engine.zona_viva(o.symbol)
+        info = data_engine.info_simbolo(o.symbol)
+        point = info.point if info else 0.0001
+        vigente = (
+            zona is not None
+            and zona["direccion"] == dir_orden
+            and abs(zona["entrada"] - o.price_open) <= 10 * point
+        )
+        if vigente:
+            continue
+
+        res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+        if res is not None and res.retcode == mt5.TRADE_RETCODE_DONE:
+            logger.info("Orden límite %s %s (ticket %s) cancelada — zona invalidada o reemplazada.",
+                        o.symbol, dir_orden, o.ticket)
+            enviar_telegram(
+                f"🗑 *Orden límite cancelada*\n{o.symbol} {dir_orden} @ {o.price_open}\n"
+                f"Motivo: zona invalidada o reemplazada por nueva estructura."
+            )
+        else:
+            retcode = res.retcode if res else -1
+            logger.error("No se pudo cancelar la orden %s (%s): retcode %s", o.ticket, o.symbol, retcode)
+            guardar_error(o.symbol, retcode, "Fallo cancelando orden límite huérfana", {"ticket": o.ticket})
 
 
 # ============================================================
@@ -234,21 +304,31 @@ def ejecutar_orden(senal: signal_engine.Senal, lote: float):
 # ============================================================
 
 def ciclo() -> None:
-    if limite_de_perdidas_alcanzado():
-        return
+    limite = limite_de_perdidas_alcanzado()
 
     simbolos_activos = data_engine.verificar_simbolos()
     if not simbolos_activos:
         logger.error("Ningún símbolo disponible — revisa nombres en config.SYMBOLS vs. tu broker.")
         return
 
+    # Evalúa la estructura SIEMPRE (aunque el límite esté alcanzado),
+    # porque necesitamos las zonas vivas para cancelar límites huérfanas.
     senales = signal_engine.evaluar_todos_los_simbolos(simbolos_activos)
+    cancelar_pendientes_invalidadas()
+
+    if limite:
+        return  # no se colocan órdenes nuevas hasta mañana
 
     for senal in senales:
+        if _pendiente_existente(senal):
+            logger.info("%s %s: ya existe una orden límite en %.5f — se omite duplicado.",
+                        senal.symbol, senal.direccion, senal.precio_entrada)
+            continue
+
         senal_id = guardar_senal(senal)
 
         lote = calcular_lote(senal.symbol, senal.precio_entrada, senal.stop_loss)
-        resultado = ejecutar_orden(senal, lote)
+        resultado, fue_pendiente = ejecutar_orden(senal, lote)
 
         if resultado is None or resultado.retcode != mt5.TRADE_RETCODE_DONE:
             retcode = resultado.retcode if resultado else -1
@@ -263,15 +343,17 @@ def ciclo() -> None:
             )
             continue
 
+        estado_op = "PENDIENTE" if fue_pendiente else "ABIERTA"
         if senal_id:
             actualizar_estado_senal(senal_id, "EJECUTADA")
-        guardar_operacion(senal_id, senal, resultado.order, lote)
+        guardar_operacion(senal_id, senal, resultado.order, lote, estado_op)
 
+        titulo = "🕐 *Orden límite colocada*" if fue_pendiente else "✅ *Entrada a mercado*"
         enviar_telegram(
-            f"✅ *Nueva operación*\n"
+            f"{titulo}\n"
             f"*{senal.symbol}* — {senal.direccion}\n"
-            f"Entrada: {senal.precio_entrada}\n"
-            f"SL: {senal.stop_loss}\n"
+            f"Entrada (50% zona): {senal.precio_entrada}\n"
+            f"SL: {senal.stop_loss} (ancla {senal.metadata.get('ancla')})\n"
             f"TP1: {senal.take_profit} | TP2: {senal.take_profit_2}\n"
             f"Lote: {lote}\n"
             f"Estrategia: {senal.estrategia}"
@@ -283,7 +365,7 @@ def main() -> None:
         logger.error("No se pudo conectar a MT5. Verifica que el terminal esté abierto y logueado.")
         return
 
-    logger.info("Bot SMC 5-activos iniciado. Símbolos: %s", config.SYMBOLS)
+    logger.info("Bot Golden Zone (IGZ) 5-activos iniciado. Símbolos: %s", config.SYMBOLS)
     logger.info("Límite de pérdidas diarias (compartido): %d", config.MAX_LOSSES_PER_DAY_TOTAL)
 
     cuenta = mt5.account_info()
@@ -293,13 +375,13 @@ def main() -> None:
         f"Cuenta: {cuenta.login if cuenta else 'N/D'} — Balance: {balance_txt}\n"
         f"Símbolos: {', '.join(config.SYMBOLS)}\n"
         f"Límite pérdidas/día: {config.MAX_LOSSES_PER_DAY_TOTAL} (compartido)\n"
-        f"Estrategia: Impulso+Retroceso50+CHoCH-BOS-M1"
+        f"Estrategia: Golden Zone IGZ ({config.TF_ESTRUCTURA}) — entrada límite 50%"
     )
 
     try:
         while True:
             ciclo()
-            time.sleep(60)  # corre cada minuto (timeframe base de confirmación es M1)
+            time.sleep(60)
     except KeyboardInterrupt:
         logger.info("Detenido manualmente.")
     finally:
