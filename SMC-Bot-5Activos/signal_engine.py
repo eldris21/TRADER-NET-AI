@@ -1,142 +1,279 @@
 """
-signal_engine.py — Orquesta la estrategia completa por símbolo:
+signal_engine.py — Estrategia GOLDEN ZONE estructural.
 
-1. En M5: identifica el último impulso válido (filtrado por ATR).
-2. Evalúa si el precio actual ya retrocedió >=50% (y <=78.6%) de ese impulso.
-   Si no, descarta — no se opera.
-3. Si el retroceso es válido, baja a M1 y busca CHoCH en la dirección
-   del impulso original.
-4. Si hay CHoCH, busca BOS posterior en la misma dirección.
-5. Si hay BOS, calcula la entrada al 50% de esa pierna del BOS,
-   el SL (más allá del pivote roto por el CHoCH + colchón ATR),
-   y TP1/TP2 por múltiplos de R:R.
+Port fiel del indicador Pine "Impulso + Golden Zone [IGZ] v4":
 
-Devuelve un objeto Senal listo para pasar a bot_engine.py, o None si
-no se cumplen todas las condiciones.
+  COMPRAS: cuando existe un HL confirmado y después se confirma un nuevo HH,
+           se proyecta el fibo desde ese HL (100%) hasta el HH (0%).
+           Golden Zone = bloque 50% - 61.8%.
+  VENTAS:  espejo — LH confirmado y después un nuevo LL.
+
+  - Un swing se confirma cuando el precio CIERRA en contra del extremo
+    más de REV_MULT_ATR * ATR (igual que el input "Umbral de giro" del
+    indicador). Solo velas cerradas => sin repaint.
+  - La zona vive hasta que el precio cierra más allá del ancla (HL/LH)
+    => INVALIDADA, o hasta que un nuevo par estructural la reemplaza.
+
+Traducción a operativa (decisiones del usuario, 2026-08-13):
+  - Timeframe de estructura: M5 (config.TF_ESTRUCTURA).
+  - Entrada: ORDEN LÍMITE en el nivel 50% del fibo (borde superior de la
+    zona de compra / borde inferior de la zona de venta).
+  - SL: en el ancla (HL/LH) ± colchón de ATR_SL_BUFFER_MULT * ATR.
+  - TP1/TP2: múltiplos TP1_RR / TP2_RR del riesgo.
+
+Interfaz hacia bot_engine (sin cambios):
+  - clase Senal
+  - evaluar_todos_los_simbolos(simbolos) -> list[Senal]
+Interfaz nueva (para cancelar límites huérfanas):
+  - zona_viva(symbol) -> dict | None
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+
+import pandas as pd
 
 import config
 import data_engine
-import structure
 
 logger = logging.getLogger("signal_engine")
+
+ESTRATEGIA = f"IGZ-GoldenZone-{config.TF_ESTRUCTURA}"
 
 
 @dataclass
 class Senal:
     symbol: str
-    direccion: str            # "BUY" / "SELL"
-    precio_entrada: float
+    estrategia: str
+    direccion: str          # "BUY" | "SELL"
+    precio_entrada: float   # nivel 50% del fibo (orden límite)
     stop_loss: float
-    take_profit: float        # TP1 (el que se guarda como take_profit principal en idx_senales)
-    take_profit_2: float      # TP2, se guarda en metadata
-    estrategia: str = "Impulso+Retroceso50+CHoCH-BOS-M1"
-    metadata: Optional[dict] = None
+    take_profit: float      # TP1
+    take_profit_2: float    # TP2 (informativo; la orden lleva TP1)
+    metadata: dict = field(default_factory=dict)
 
 
-def _direccion_a_orden(direccion_impulso: str) -> str:
-    return "BUY" if direccion_impulso == "ALCISTA" else "SELL"
+# Estado del módulo (en memoria):
+#  - _zonas_emitidas: ids de zonas ya convertidas en señal, para no repetir.
+#  - _zonas_vivas:    zona actualmente vigente por símbolo (o None), usada
+#                     por bot_engine para cancelar órdenes límite huérfanas.
+_zonas_emitidas: set[str] = set()
+_zonas_vivas: dict[str, Optional[dict]] = {}
 
 
-def evaluar_symbol(symbol: str) -> Optional[Senal]:
-    """Corre el pipeline completo de la estrategia para un símbolo. Devuelve Senal o None."""
+# ============================================================
+# ATR estilo Pine (ta.atr usa RMA / suavizado de Wilder)
+# ============================================================
 
-    df_m5 = data_engine.obtener_velas(symbol, config.TF_IMPULSO, cantidad=300)
-    if df_m5.empty or len(df_m5) < config.PIVOT_LOOKBACK * 2 + 5:
-        return None
+def _atr_rma(df: pd.DataFrame, period: int) -> pd.Series:
+    high, low, close = df["high"], df["low"], df["close"]
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1,
+    ).max(axis=1)
+    return tr.ewm(alpha=1.0 / period, adjust=False).mean()
 
-    impulso = structure.identificar_ultimo_impulso(df_m5)
-    if impulso is None:
-        logger.info("%s: sin impulso M5 lo bastante grande todavía (esperando)", symbol)
-        return None  # no hay impulso reciente lo suficientemente grande
 
-    precio_ahora = data_engine.precio_actual(symbol)
-    if precio_ahora is None:
-        return None
+# ============================================================
+# MOTOR DE SWINGS + GOLDEN ZONE (réplica del script Pine)
+# ============================================================
 
-    retroceso = structure.evaluar_retroceso(impulso, precio_ahora)
-    if not retroceso.valido:
-        logger.info(
-            "%s: sin condiciones aún — retroceso %.1f%% (necesita %.0f%%-%.0f%%)",
-            symbol, retroceso.nivel_alcanzado * 100,
-            config.FIBO_RETROCESO_MINIMO * 100, config.FIBO_RETROCESO_MAXIMO * 100,
-        )
-        return None
+def _procesar_simbolo(symbol: str, df: pd.DataFrame) -> Optional[dict]:
+    """
+    Recorre las velas cerradas replicando el módulo 1 y 2 del indicador.
+    Devuelve la zona VIVA al cierre de la última vela (dict) o None.
 
-    logger.info("%s: retroceso válido (%.1f%%) — buscando CHoCH en M1...", symbol, retroceso.nivel_alcanzado * 100)
+    dict de zona:
+      direccion   "BUY"/"SELL"
+      top, bot    bordes de la Golden Zone (50% y 61.8%)
+      entrada     nivel 50% (top en compras, bot en ventas)
+      anchor      HL/LH que ancla el fibo (nivel de invalidación)
+      extremo     precio del HH/LL
+      creada_en   timestamp (str) de la vela que confirmó el par
+      tapped      True si el precio ya tocó la zona (mitigada)
+      atr         ATR en la última vela (para el colchón del SL)
+    """
+    atr = _atr_rma(df, config.ATR_PERIOD)
 
-    # Retroceso válido -> bajar a M1 a buscar las dos confirmaciones
-    df_m1 = data_engine.obtener_velas(symbol, config.TF_CONFIRMACION, cantidad=300)
-    if df_m1.empty:
-        return None
+    dir_ = 0                 # 1 alcista, -1 bajista, 0 sin iniciar
+    ext_p = None             # extremo provisional del tramo actual
+    last_hi_p = None; last_hi_t = None   # último swing high confirmado (precio, etiqueta)
+    last_lo_p = None; last_lo_t = None   # último swing low confirmado
 
-    choch = structure.buscar_choch(df_m1, impulso.direccion)
-    if choch is None:
-        logger.info("%s: retroceso válido pero sin CHoCH en M1 todavía", symbol)
-        return None
+    zona: Optional[dict] = None
 
-    logger.info("%s: CHoCH confirmado (%s) — buscando BOS...", symbol, choch.direccion)
+    o = df["open"].to_numpy(); h = df["high"].to_numpy()
+    l = df["low"].to_numpy();  c = df["close"].to_numpy()
+    t = df["time"].astype(str).to_numpy()
+    a = atr.to_numpy()
 
-    bos = structure.buscar_bos(df_m1, choch)
-    if bos is None:
-        logger.info("%s: CHoCH confirmado pero sin BOS en M1 todavía", symbol)
-        return None
+    for i in range(len(df)):
+        if pd.isna(a[i]) or a[i] <= 0:
+            continue
 
-    # Las dos confirmaciones están — calcular niveles de la operación
-    entrada = structure.calcular_entrada_50_bos(df_m1, choch, bos)
+        new_high = False; new_low = False
+        conf_p = None; conf_tag = None
 
-    atr_m1 = structure.calcular_atr(df_m1)
-    buffer = atr_m1 * config.ATR_SL_BUFFER_MULT
+        # ---- módulo 1: motor de swings ----
+        if dir_ == 0:
+            dir_ = 1 if c[i] >= o[i] else -1
+            ext_p = h[i] if dir_ == 1 else l[i]
+        elif dir_ == 1:
+            if h[i] > ext_p:
+                ext_p = h[i]
+            elif c[i] < ext_p - config.REV_MULT_ATR * a[i]:
+                conf_tag = "H" if last_hi_p is None else ("HH" if ext_p > last_hi_p else "LH")
+                last_hi_p = ext_p; last_hi_t = conf_tag
+                new_high = True; conf_p = ext_p
+                dir_ = -1; ext_p = l[i]
+        else:
+            if l[i] < ext_p:
+                ext_p = l[i]
+            elif c[i] > ext_p + config.REV_MULT_ATR * a[i]:
+                conf_tag = "L" if last_lo_p is None else ("LL" if ext_p < last_lo_p else "HL")
+                last_lo_p = ext_p; last_lo_t = conf_tag
+                new_low = True; conf_p = ext_p
+                dir_ = 1; ext_p = h[i]
 
-    if choch.direccion == "ALCISTA":
-        sl = choch.pivot_roto.price - buffer
+        # ---- módulo 2: creación de la Golden Zone ----
+        if new_high and conf_tag == "HH" and last_lo_p is not None and last_lo_t == "HL":
+            rng = conf_p - last_lo_p
+            zona = {
+                "direccion": "BUY",
+                "top": conf_p - config.FIBO_ZONA_INICIO * rng,   # 50%
+                "bot": conf_p - config.FIBO_ZONA_FIN * rng,      # 61.8%
+                "anchor": last_lo_p,
+                "extremo": conf_p,
+                "creada_en": t[i],
+                "tapped": False,
+            }
+        elif new_low and conf_tag == "LL" and last_hi_p is not None and last_hi_t == "LH":
+            rng = last_hi_p - conf_p
+            zona = {
+                "direccion": "SELL",
+                "top": conf_p + config.FIBO_ZONA_FIN * rng,      # 61.8%
+                "bot": conf_p + config.FIBO_ZONA_INICIO * rng,   # 50%
+                "anchor": last_hi_p,
+                "extremo": conf_p,
+                "creada_en": t[i],
+                "tapped": False,
+            }
+
+        # ---- módulo 2: mantenimiento (invalidación / mitigación) ----
+        if zona is not None:
+            invalida = (c[i] < zona["anchor"]) if zona["direccion"] == "BUY" else (c[i] > zona["anchor"])
+            if invalida:
+                zona = None
+            elif not zona["tapped"] and l[i] <= zona["top"] and h[i] >= zona["bot"]:
+                zona["tapped"] = True
+
+    if zona is not None:
+        zona["entrada"] = zona["top"] if zona["direccion"] == "BUY" else zona["bot"]
+        zona["atr"] = float(a[-1])
+    return zona
+
+
+# ============================================================
+# CONSTRUCCIÓN DE LA SEÑAL
+# ============================================================
+
+def _redondear(valor: float, digits: int) -> float:
+    # float() nativo: los np.float64 de pandas no son serializables a JSON (Supabase)
+    return float(round(float(valor), digits))
+
+
+def _construir_senal(symbol: str, zona: dict) -> Optional[Senal]:
+    info = data_engine.info_simbolo(symbol)
+    digits = info.digits if info else 5
+
+    colchon = config.ATR_SL_BUFFER_MULT * zona["atr"]
+    entrada = zona["entrada"]
+
+    if zona["direccion"] == "BUY":
+        sl = zona["anchor"] - colchon
         riesgo = entrada - sl
-        tp1 = entrada + riesgo * config.TP1_RR
-        tp2 = entrada + riesgo * config.TP2_RR
+        tp1 = entrada + config.TP1_RR * riesgo
+        tp2 = entrada + config.TP2_RR * riesgo
     else:
-        sl = choch.pivot_roto.price + buffer
+        sl = zona["anchor"] + colchon
         riesgo = sl - entrada
-        tp1 = entrada - riesgo * config.TP1_RR
-        tp2 = entrada - riesgo * config.TP2_RR
+        tp1 = entrada - config.TP1_RR * riesgo
+        tp2 = entrada - config.TP2_RR * riesgo
 
     if riesgo <= 0:
-        logger.warning("%s: riesgo calculado <= 0, se descarta señal (revisar datos)", symbol)
+        logger.warning("%s: riesgo no positivo (entrada %.5f / SL %.5f) — señal descartada.",
+                       symbol, entrada, sl)
         return None
 
     return Senal(
         symbol=symbol,
-        direccion=_direccion_a_orden(choch.direccion),
-        precio_entrada=round(entrada, 5),
-        stop_loss=round(sl, 5),
-        take_profit=round(tp1, 5),
-        take_profit_2=round(tp2, 5),
+        estrategia=ESTRATEGIA,
+        direccion=zona["direccion"],
+        precio_entrada=_redondear(entrada, digits),
+        stop_loss=_redondear(sl, digits),
+        take_profit=_redondear(tp1, digits),
+        take_profit_2=_redondear(tp2, digits),
         metadata={
-            "impulso_inicio": impulso.inicio.price,
-            "impulso_fin": impulso.fin.price,
-            "retroceso_pct": round(retroceso.nivel_alcanzado * 100, 2),
-            "choch_pivot": choch.pivot_roto.price,
-            "bos_precio": bos.precio_cierre,
-            "atr_m1": round(atr_m1, 5),
-            "rr_tp1": config.TP1_RR,
-            "rr_tp2": config.TP2_RR,
+            "zona_top": _redondear(zona["top"], digits),
+            "zona_bot": _redondear(zona["bot"], digits),
+            "ancla": _redondear(zona["anchor"], digits),
+            "extremo": _redondear(zona["extremo"], digits),
+            "zona_creada_en": zona["creada_en"],
+            "tf": config.TF_ESTRUCTURA,
+            "rev_mult_atr": config.REV_MULT_ATR,
         },
     )
 
 
-def evaluar_todos_los_simbolos(simbolos_activos: list[str]) -> list[Senal]:
-    """Corre evaluar_symbol() para cada símbolo disponible y devuelve las señales encontradas."""
-    logger.info("--- Nuevo ciclo: evaluando %d símbolos ---", len(simbolos_activos))
-    senales = []
-    for symbol in simbolos_activos:
-        try:
-            senal = evaluar_symbol(symbol)
-            if senal:
-                senales.append(senal)
-                logger.info("Señal detectada: %s %s @ %s", senal.symbol, senal.direccion, senal.precio_entrada)
-        except Exception:
-            logger.exception("Error evaluando %s", symbol)
+# ============================================================
+# API HACIA bot_engine
+# ============================================================
+
+def evaluar_todos_los_simbolos(simbolos: list[str]) -> list[Senal]:
+    """
+    Recalcula la estructura completa por símbolo sobre las últimas velas
+    (resistente a reinicios) y devuelve una señal por cada zona NUEVA.
+    Deja el estado de zonas vivas disponible vía zona_viva().
+    """
+    senales: list[Senal] = []
+    for symbol in simbolos:
+        df = data_engine.obtener_velas(symbol, config.TF_ESTRUCTURA, config.VELAS_ANALISIS)
+        if df.empty or len(df) < config.ATR_PERIOD * 3:
+            logger.warning("%s: velas insuficientes para evaluar estructura.", symbol)
+            _zonas_vivas[symbol] = None
+            continue
+
+        zona = _procesar_simbolo(symbol, df)
+        _zonas_vivas[symbol] = zona
+        if zona is None:
+            continue
+
+        zona_id = f"{symbol}|{zona['direccion']}|{zona['creada_en']}"
+        if zona_id in _zonas_emitidas:
+            continue
+
+        senal = _construir_senal(symbol, zona)
+        if senal is None:
+            continue
+
+        _zonas_emitidas.add(zona_id)
+        senal.metadata["zona_id"] = zona_id
+        logger.info(
+            "%s: nueva Golden Zone %s [%.5f - %.5f], entrada límite %.5f, ancla %.5f",
+            symbol, zona["direccion"], zona["bot"], zona["top"],
+            senal.precio_entrada, zona["anchor"],
+        )
+        senales.append(senal)
+
+    # higiene: que el set de emitidas no crezca sin límite
+    if len(_zonas_emitidas) > 500:
+        _zonas_emitidas.clear()
+
     return senales
+
+
+def zona_viva(symbol: str) -> Optional[dict]:
+    """Zona vigente del símbolo tras la última evaluación (o None)."""
+    return _zonas_vivas.get(symbol)
