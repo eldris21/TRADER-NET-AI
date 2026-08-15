@@ -3,6 +3,7 @@ import { supabase } from './lib/supabase.js'
 import StatCard from './components/StatCard.jsx'
 import SignalsTable from './components/SignalsTable.jsx'
 import PositionsPanel from './components/PositionsPanel.jsx'
+import PerformanceStrip from './components/PerformanceStrip.jsx'
 
 export default function App() {
   const [signals, setSignals] = useState([])
@@ -62,33 +63,39 @@ export default function App() {
   const pendientes = signals.filter((s) => s.estado === 'PENDING').length
 
   return (
-    <div className="min-h-screen bg-grid-fade">
-      <header className="border-b border-ink-700/80 bg-ink-950/80 backdrop-blur">
+    <div className="min-h-screen bg-paper">
+      <header className="border-b border-hairline bg-panel">
         <div className="max-w-6xl mx-auto px-5 py-4 flex items-center justify-between">
-          <div>
-            <div className="flex items-baseline gap-2">
-              <h1 className="font-display text-lg font-bold tracking-tight text-slate-50">
-                TradingPro
-              </h1>
-              <span className="font-mono text-[11px] text-signal-violet tracking-widest uppercase">
-                Nasdaq · US30
-              </span>
+          <div className="flex items-center gap-3">
+            <div>
+              <div className="flex items-baseline gap-2">
+                <h1 className="font-display text-lg font-semibold tracking-tight text-ink-900">
+                  TradingPro
+                </h1>
+                <span className="font-mono text-[11px] text-brand tracking-widest uppercase">
+                  Nasdaq · US30
+                </span>
+              </div>
+              <p className="text-xs text-ink-500 font-mono mt-0.5">
+                Panel de señales en vivo · magic 20260801
+              </p>
             </div>
-            <p className="text-xs text-slate-500 font-mono mt-0.5">
-              Panel de señales en vivo · magic 20260801
-            </p>
+            <span className="inline-flex items-center gap-1.5 rounded-sm border border-up/30 bg-up-soft px-2 py-1 text-[10px] font-mono font-medium text-up uppercase tracking-widest">
+              <span className="h-1.5 w-1.5 rounded-full bg-up" />
+              En vivo
+            </span>
           </div>
           <div className="text-right">
-            <div className="font-mono text-sm tabular text-slate-300">
+            <div className="font-mono text-sm tabular text-ink-700">
               {now.toLocaleTimeString('es-DO', { hour12: false })}
             </div>
-            <div className="text-[11px] text-slate-500 font-mono">Hora RD</div>
+            <div className="text-[11px] text-ink-500 font-mono">Hora RD</div>
           </div>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-5 py-6 space-y-6">
-        <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <main className="max-w-6xl mx-auto px-5 py-6 space-y-5">
+        <section className="border border-hairline bg-panel rounded-md px-2 py-2 grid grid-cols-2 md:grid-cols-4 divide-x divide-hairline">
           <StatCard label="Posiciones abiertas" value={abiertas} />
           <StatCard label="Señales pendientes" value={pendientes} />
           <StatCard
@@ -97,7 +104,7 @@ export default function App() {
             sub={`${cerradasHoy.length} cerradas`}
             tone={pnlHoy > 0 ? 'up' : pnlHoy < 0 ? 'down' : 'default'}
           />
-          <StatCard label="Símbolos activos" value="2" sub="US100Cash · US30Cash" />
+          <StatCard label="Símbolos activos" value="5" sub="Gold · Silver · US100 · US30 · EURUSD" />
         </section>
 
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -108,10 +115,14 @@ export default function App() {
             <PositionsPanel operaciones={operaciones} loading={loading} />
           </div>
         </section>
+
+        <section>
+          <PerformanceStrip operaciones={operaciones} loading={loading} />
+        </section>
       </main>
 
       <footer className="max-w-6xl mx-auto px-5 py-8 text-center">
-        <p className="text-[11px] font-mono text-slate-600">
+        <p className="text-[11px] font-mono text-ink-400">
           TradingPro-Nasdaq · Supabase kakvbirmgcnojxtqjlwm · datos en vivo
         </p>
       </footer>
