@@ -4,30 +4,47 @@ export default {
   theme: {
     extend: {
       colors: {
-        ink: {
-          950: '#07070b',
-          900: '#0c0c14',
-          850: '#111120',
-          800: '#161629',
-          700: '#20203a',
-          600: '#2c2c4d',
+        paper: '#f5f6f2',
+        panel: '#ffffff',
+        hairline: {
+          DEFAULT: '#e2e4dd',
+          strong: '#cdd0c6',
         },
-        signal: {
-          violet: '#7c6cf0',
-          indigo: '#5b4fe0',
-          amber: '#f0b040',
-          green: '#3ecf8e',
-          red: '#f0555c',
+        ink: {
+          900: '#14171b',
+          700: '#363b35',
+          500: '#6b7167',
+          400: '#8b9086',
+          300: '#c8cbc2',
+        },
+        brand: {
+          DEFAULT: '#3730a3',
+          soft: '#ecebfa',
+        },
+        up: {
+          DEFAULT: '#0f7b3f',
+          soft: '#e6f5ea',
+        },
+        down: {
+          DEFAULT: '#b91c1c',
+          soft: '#fbe9e9',
+        },
+        amber: {
+          DEFAULT: '#b45309',
+          soft: '#fbf0da',
+        },
+        sym: {
+          gold: '#a3690a',
+          silver: '#5b6169',
+          nasdaq: '#3730a3',
+          us30: '#0f7b3f',
+          eur: '#0e7490',
         },
       },
       fontFamily: {
         display: ['"Space Grotesk"', 'ui-sans-serif', 'system-ui'],
         mono: ['"IBM Plex Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
-        body: ['"Inter"', 'ui-sans-serif', 'system-ui'],
-      },
-      backgroundImage: {
-        'grid-fade':
-          'linear-gradient(to bottom, rgba(124,108,240,0.06), transparent 60%)',
+        body: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui'],
       },
     },
   },
