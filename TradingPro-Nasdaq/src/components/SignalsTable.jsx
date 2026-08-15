@@ -1,10 +1,10 @@
 import SymbolBadge from './SymbolBadge.jsx'
 
 const ESTADO_STYLES = {
-  PENDING: 'text-signal-amber',
-  EJECUTADA: 'text-signal-green',
-  EXPIRADA: 'text-slate-500',
-  RECHAZADA: 'text-signal-red',
+  PENDING: 'text-amber bg-amber-soft',
+  EJECUTADA: 'text-up bg-up-soft',
+  EXPIRADA: 'text-ink-500 bg-ink-300/20',
+  RECHAZADA: 'text-down bg-down-soft',
 }
 
 function timeAgo(iso) {
@@ -18,12 +18,12 @@ function timeAgo(iso) {
 
 export default function SignalsTable({ signals, loading }) {
   return (
-    <div className="border border-ink-700 bg-ink-900/60 rounded-lg overflow-hidden">
-      <div className="px-4 py-3 border-b border-ink-700 flex items-center justify-between">
-        <h2 className="font-display text-sm font-semibold text-slate-200 tracking-wide">
+    <div className="border border-hairline bg-panel rounded-md overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-hairline flex items-center justify-between">
+        <h2 className="font-display text-[13px] font-semibold text-ink-900 tracking-wide">
           Señales recientes
         </h2>
-        <span className="text-[11px] font-mono text-slate-500">
+        <span className="text-[11px] font-mono text-ink-500">
           {signals.length} en cola
         </span>
       </div>
@@ -31,7 +31,7 @@ export default function SignalsTable({ signals, loading }) {
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-left text-[11px] uppercase tracking-widest text-slate-500 font-mono border-b border-ink-700">
+            <tr className="text-left text-[11px] uppercase tracking-widest text-ink-500 font-mono border-b border-hairline">
               <th className="px-4 py-2 font-medium">Activo</th>
               <th className="px-4 py-2 font-medium">Estrategia</th>
               <th className="px-4 py-2 font-medium">Dir.</th>
@@ -42,53 +42,53 @@ export default function SignalsTable({ signals, loading }) {
               <th className="px-4 py-2 font-medium text-right">Hace</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-ink-800">
+          <tbody className="divide-y divide-hairline">
             {loading && (
               <tr>
-                <td colSpan={8} className="px-4 py-8 text-center text-slate-500 font-mono text-xs">
+                <td colSpan={8} className="px-4 py-8 text-center text-ink-500 font-mono text-xs">
                   Cargando señales...
                 </td>
               </tr>
             )}
             {!loading && signals.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-10 text-center text-slate-500 text-xs">
-                  Todavía no hay señales registradas para Nasdaq/US30.
+                <td colSpan={8} className="px-4 py-10 text-center text-ink-500 text-xs">
+                  Todavía no hay señales registradas.
                 </td>
               </tr>
             )}
             {signals.map((s) => (
-              <tr key={s.id} className="hover:bg-ink-850/60 transition-colors">
+              <tr key={s.id} className="hover:bg-paper transition-colors">
                 <td className="px-4 py-2.5">
                   <SymbolBadge symbol={s.symbol} />
                 </td>
-                <td className="px-4 py-2.5 text-slate-300">{s.estrategia}</td>
+                <td className="px-4 py-2.5 text-ink-700">{s.estrategia}</td>
                 <td className="px-4 py-2.5">
                   <span
                     className={`font-mono text-xs font-semibold ${
-                      s.direccion === 'BUY' ? 'text-signal-green' : 'text-signal-red'
+                      s.direccion === 'BUY' ? 'text-up' : 'text-down'
                     }`}
                   >
                     {s.direccion}
                   </span>
                 </td>
-                <td className="px-4 py-2.5 text-right font-mono tabular text-slate-300">
+                <td className="px-4 py-2.5 text-right font-mono tabular text-ink-900">
                   {s.precio_entrada}
                 </td>
-                <td className="px-4 py-2.5 text-right font-mono tabular text-slate-500">
+                <td className="px-4 py-2.5 text-right font-mono tabular text-ink-500">
                   {s.stop_loss}
                 </td>
-                <td className="px-4 py-2.5 text-right font-mono tabular text-slate-500">
+                <td className="px-4 py-2.5 text-right font-mono tabular text-ink-500">
                   {s.take_profit}
                 </td>
                 <td className="px-4 py-2.5">
                   <span
-                    className={`font-mono text-[11px] font-medium ${ESTADO_STYLES[s.estado] || 'text-slate-400'}`}
+                    className={`inline-block rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-medium ${ESTADO_STYLES[s.estado] || 'text-ink-500 bg-ink-300/20'}`}
                   >
                     {s.estado}
                   </span>
                 </td>
-                <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-500">
+                <td className="px-4 py-2.5 text-right font-mono text-xs text-ink-500">
                   {timeAgo(s.creado_en)}
                 </td>
               </tr>
