@@ -83,8 +83,8 @@ TRAILING_ATR_MULT = 1.2          # trailing stop = ATR * este múltiplo (pendien
 # ============================================================
 # PARÁMETROS DE ESTRATEGIA — GOLDEN ZONE (IGZ)
 # ============================================================
-TF_ESTRUCTURA = "M5"             # timeframe donde se calculan swings y zonas
-VELAS_ANALISIS = 600             # velas cerradas que se analizan por ciclo
+TF_ESTRUCTURA = "M1"             # timeframe donde se calculan swings y zonas (cambiado de M5 el 2026-08-17)
+VELAS_ANALISIS = 1500            # velas cerradas por ciclo (~25h de M1, para que la estructura tenga contexto)
 
 ATR_PERIOD = 14
 REV_MULT_ATR = 4.0               # "Umbral de giro (x ATR)" del indicador:
@@ -107,6 +107,22 @@ RESTRINGIR_A_KILLZONE = False
 
 # Pendiente: filtro de noticias de alto impacto (NFP, CPI, FOMC).
 NEWS_FILTER_ENABLED = False
+
+
+# ============================================================
+# COMPATIBILIDAD — parámetros de la estrategia anterior que aún
+# usan módulos viejos (structure.py / result_tracker.py).
+# Eliminar cuando esos módulos se adapten o se retiren.
+# ============================================================
+PIVOT_LOOKBACK = 3
+BREAKEVEN_AT_PCT_TO_TP1 = 0.70   # solo para result_tracker viejo; el bot usa BREAKEVEN_AT_R
+TF_IMPULSO = "M5"
+TF_CONFIRMACION = "M1"
+FIBO_RETROCESO_MINIMO = 0.50
+FIBO_RETROCESO_MAXIMO = 0.786
+FIBO_ENTRADA_EN_BOS = 0.50
+MIN_IMPULSO_ATR_MULT = 3.0
+RISK_PERCENT_PER_TRADE = 6.0
 
 
 @dataclass
