@@ -247,8 +247,15 @@ def evaluar_todos_los_simbolos(simbolos: list[str]) -> list[Senal]:
 
         zona = _procesar_simbolo(symbol, df)
         _zonas_vivas[symbol] = zona
+
+        # Latido: deja constancia de cada análisis, haya o no zona.
         if zona is None:
+            logger.info("%s: %d velas %s analizadas — sin zona activa (esperando nuevo par HL→HH o LH→LL).",
+                        symbol, len(df), config.TF_ESTRUCTURA)
             continue
+        logger.info("%s: %d velas %s analizadas — zona %s viva [%.5f - %.5f]%s.",
+                    symbol, len(df), config.TF_ESTRUCTURA, zona["direccion"],
+                    zona["bot"], zona["top"], " (ya mitigada)" if zona.get("tapped") else "")
 
         zona_id = f"{symbol}|{zona['direccion']}|{zona['creada_en']}"
         if zona_id in _zonas_emitidas:
