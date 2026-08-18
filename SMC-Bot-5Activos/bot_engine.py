@@ -1,7 +1,8 @@
 """
 bot_engine.py — Loop principal del bot.
 
-- Corre la estrategia GOLDEN ZONE (IGZ, M5) sobre los símbolos ACTIVOS
+- Corre la estrategia GOLDEN ZONE (IGZ) en cada TF de TFS_ESTRUCTURA
+  (M1 y M5, de forma independiente) sobre los símbolos ACTIVOS
   en config.SYMBOLS (actualmente solo GOLD; el resto pausado).
 - Entrada por ORDEN LÍMITE en el 50% del fibo de la zona. Si al momento
   de colocarla el precio ya alcanzó ese nivel, entra a mercado.
@@ -434,13 +435,12 @@ def cancelar_pendientes_invalidadas() -> None:
         else:
             continue
 
-        zona = signal_engine.zona_viva(o.symbol)
+        zonas = signal_engine.zonas_vivas(o.symbol)
         info = data_engine.info_simbolo(o.symbol)
         point = info.point if info else 0.0001
-        vigente = (
-            zona is not None
-            and zona["direccion"] == dir_orden
-            and abs(zona["entrada"] - o.price_open) <= 10 * point
+        vigente = any(
+            z["direccion"] == dir_orden and abs(z["entrada"] - o.price_open) <= 10 * point
+            for z in zonas
         )
         if vigente:
             continue
@@ -576,7 +576,7 @@ def main() -> None:
         f"Lote GOLD: {config.FIXED_LOTS.get('GOLD')}\n"
         f"Límites/día: {config.MAX_LOSSES_PER_DAY_TOTAL} pérdidas | {config.MAX_SIGNALS_PER_DAY_TOTAL} señales\n"
         f"Breakeven: al alcanzar {config.BREAKEVEN_AT_R:g}R (1:1)\n"
-        f"Estrategia: Golden Zone IGZ ({config.TF_ESTRUCTURA}) — entrada límite 50%"
+        f"Estrategia: Golden Zone IGZ ({'+'.join(config.TFS_ESTRUCTURA)}) — entrada límite 50%"
     )
 
     try:
